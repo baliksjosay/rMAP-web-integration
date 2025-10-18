@@ -10,6 +10,7 @@ while [ -h "$rMAP" ]; do
     [[ $rMAP != /* ]] && rMAP="rMAPDIR/$rMAP"
 done
 rMAPDIR="$(cd -P "$(dirname "$rMAP")" && pwd)"
+
 #Defining Color codes
 Off="\033[0m"       # Text Reset
 Red="\033[1;31m"    # Red
@@ -37,7 +38,9 @@ AMR=0
 PHY=0
 MGE=0
 PANGENOME=0
-LIS="~/list.txt"
+SEQ_DIR="/opt/web/sequences"
+LIST_FILE="/opt/web/sequences/list.txt"
+
 DOWNLOAD=0
 MGE=0
 TITLE=
@@ -100,7 +103,7 @@ OBLIGATORY OPTIONS:
     -c/--config     Install and configure full software dependencies  
 
 OTHER OPTIONS:
-    -d/--download   Download sequences from NCBI-SRA. Requires 'list.txt' of  sample ids saved at $HOME 
+    -d/--download   Download sequences from NCBI-SRA. Requires 'list.txt' of  sample ids saved at '$SEQUENCE_DIR' 
                     directory
 
     -f/--quality    Generate .html reports with quality statistics for the samples
@@ -135,6 +138,7 @@ if [ $# == 0 ]; then
     usage
     exit 1
 fi
+
 
 ################ OPTIONS #########################
 POSITIONAL=()
@@ -255,6 +259,17 @@ if [ $CONFIG -ne "0" ]; then
     start=$SECONDS
     echo -e "$Green""rMAP will now configure the system: Please be patient...\n"
     echo -e "$Green""rMAP will now install missing R-packages..."."$O"ff
+    ### set up sequence directory and list file ###
+    mkdir -p "$SEQ_DIR"
+    touch "$LIST_FILE"
+    echo -e "$Green""Sequence directory created at: $SEQ_DIR""$Off"
+    # copy ../config-files/amr-genes.txt to $LIST_FILE if it is empty
+    if [ ! -s "$LIST_FILE" ]; then
+        cp -f "$rMAPDIR"/config-files/amr-genes.txt "$LIST_FILE"
+        echo -e "$Green""Sample list created at: $LIST_FILE""$Off"
+    else
+        echo -e "$Green""Sample list already exists at: $LIST_FILE""$Off"
+    fi
     #### R-package istallations ########
     mamba install -y -c conda-forge r-biocmanager
     Rscript -e 'library(BiocManager);BiocManager::install(c("ggtree", "rmarkdown"))'
@@ -281,20 +296,34 @@ fi
 
 ######-------------------------------- Download SRA Sequences-------------------------------------------------------###
 start=$SECONDS
+
 if [ "$DOWNLOAD" -ne "0" ]; then
     DOWNLOAD=1
-    if [ -s "$HOME/list.txt" ]; then
-        echo -e "$Blue""Sample list was found and will be used to download sequences from SRA""$Off"
-        mkdir -p "$HOME"/SRA_READS
-        for sample in $(cat $HOME/list.txt); do
-            echo -e "$Blue""Downloading Sample: $sample$Off using $Green$(fastq-dump --version)""$Off"
-            fastq-dump --split-files --gzip "$sample" -O "$HOME"/SRA_READS
-        done
-        end=$SECONDS
-        echo -e "$Green""Your NCBI-SRA download lasted Approximately: $((end - start)) seconds and your sequences were saved at $HOME/SRA_READS!!!""$Off"
-        exit
+    # Ensure sequence directory exists
+    mkdir -p "$SEQ_DIR"
+
+    if [ ! -s "$LIST_FILE" ]; then
+        cp -f "$rMAPDIR"/config-files/amr-genes.txt "$LIST_FILE"
+        echo -e "$Green""Sample list created at: $LIST_FILE""$Off"
     else
-        echo -e "$Red""ID-list was not found!! Create a 'list.txt' with sample IDs and save it at $HOME""$Off"
+        echo -e "$Green""Sample list already exists at: $LIST_FILE""$Off"
+    fi
+
+
+    if [ -s "$LIST_FILE" ]; then
+        echo -e "$Blue""Sample list found at $LIST_FILE. Starting SRA download...""$Off"
+        echo -e "$Blue""Sequences will be saved in: $SEQ_DIR""$Off"
+
+        for sample in $(cat "$LIST_FILE"); do
+            echo -e "$Blue""Downloading Sample: $sample using $Green$(fastq-dump --version)""$Off"
+            fastq-dump --split-files --gzip "$sample" -O "$SEQ_DIR"
+        done
+
+        end=$SECONDS
+        echo -e "$Green""Download completed in $((end - start)) seconds. Sequences saved at $SEQ_DIR.""$Off"
+        exit 0
+    else
+        echo -e "$Red""Error: Sample list not found! Please create '$LIST_FILE' with SRA IDs (one per line).""$Off"
         exit 1
     fi
 fi
@@ -362,7 +391,10 @@ else
 fi
 cd
 ################################ QUALITY TRIMMING ####################################
-CPUS=8
+# Use all available CPUs for maximum performance
+CPUS=$(nproc)
+echo -e "$Blue""Using all $CPUS CPU threads""$Off"
+
 if [ -e "$ADAPTERS" ]; then
     if [ "$TRIM" -ne "0" ]; then
         TRIM=1
@@ -374,7 +406,13 @@ if [ -e "$ADAPTERS" ]; then
             A=${sample}_1.fastq.gz
             B=${sample}_2.fastq.gz
             echo -e "$Red""\nProcessing sample: ""$sample""$Off"
-            trimmomatic PE -threads $CPUS -phred33 "$INPUT"/"$A" "$INPUT"/"$B" "$OUTPUT"/trimmed_reads/"$sample".clean_1.fastq.gz /dev/null "$OUTPUT"/trimmed_reads/"$sample".clean_2.fastq.gz /dev/null ILLUMINACLIP:"$ADAPTERS":1:30:11 LEADING:${QUALITY} TRAILING:${QUALITY} MINLEN:${MINLEN}
+            
+            trimmomatic PE -threads $CPUS -phred33 \
+                "$INPUT"/"$A" "$INPUT"/"$B" \
+                "$OUTPUT"/trimmed_reads/"$sample".clean_1.fastq.gz /dev/null \
+                "$OUTPUT"/trimmed_reads/"$sample".clean_2.fastq.gz /dev/null \
+                ILLUMINACLIP:"$ADAPTERS":1:30:11 \
+                LEADING:${QUALITY} TRAILING:${QUALITY} MINLEN:${MINLEN}
         done
         end=$SECONDS
         echo -e "$Green""\nYour Trimming Run Took Approximately: $((end - start)) seconds.""$Off"
@@ -383,6 +421,7 @@ if [ -e "$ADAPTERS" ]; then
         exit 1
     fi
 fi
+
 ################-------------Quality filtering stats---------------------###############
 export LC_ALL=C
 start=$SECONDS
@@ -450,24 +489,42 @@ cd
 start=$SECONDS
 mkdir -p "$OUTPUT"/references
 TEMP="$OUTPUT/references"
-REF="$TEMP/*.fa"
-IND="$TEMP/*.fai"
 tmp="$OUTPUT/temp"
 mkdir -p "$OUTPUT"/temp
-cp -rf "$REFERENCE" "$TEMP"
+
+# Extract just the filename from the full path
+REFERENCE_FILE=$(basename "$REFERENCE")
+
+# Copy just the file, not the directory structure
+cp "$REFERENCE" "$TEMP"/"$REFERENCE_FILE"
+
+# Set REF and IND to use wildcards initially (will be updated for specific file types)
+REF="$TEMP/*.fa"
+IND="$TEMP/*.fai"
 
 if [ "$VARCALL" -ne "0" ]; then
     VARCALL=1
-    if [[ $REFERENCE =~ \.gbk$ ]]; then
+    if [[ $REFERENCE_FILE =~ \.gbk$ ]]; then
         echo -e "$Blue""\nrMAP is will now perform Variant Calling...""$Off" | tee -a "$OUTPUT"/rMAP.log
         echo -e "$Red"".gbk found !!! Annotation Mode Enabled...Preparing Annotation files...""$Off" | tee -a "$OUTPUT"/rMAP.log
-        echo "$TEMP/$REFERENCE" | awk -F"." '{print $1}' | cut -d/ -f3 >"$TEMP"/temp1.txt
-        x="$(cat "$TEMP"/temp1.txt)"
-        biopython.convert "$TEMP"/"${REFERENCE}" genbank -i "$TEMP"/"$x".fa fasta
-        biopython.convert "$TEMP"/"${REFERENCE}" genbank -i "$TEMP"/"$x".gff3 gff
-        rm -rf $TEMP/${REFERENCE}
-        bwa index "$TEMP"/*.fa
-        samtools faidx "$TEMP"/*.fa
+        
+        # Extract basename without extension
+        x="${REFERENCE_FILE%.gbk}"
+        echo "$x" > "$TEMP"/temp1.txt
+        
+        # Convert the local copy
+        biopython.convert "$TEMP"/"$REFERENCE_FILE" genbank -i "$TEMP"/"$x".fa fasta
+        biopython.convert "$TEMP"/"$REFERENCE_FILE" genbank -i "$TEMP"/"$x".gff3 gff
+        rm -rf "$TEMP"/"$REFERENCE_FILE"
+        
+        # Index the converted files
+        bwa index "$TEMP"/"$x".fa
+        samtools faidx "$TEMP"/"$x".fa
+        
+        # Update REF and IND to point to the actual converted files
+        REF="$TEMP/$x.fa"
+        IND="$TEMP/$x.fa.fai"
+        
         # ####################### Alignment for .gbk file #############################
         for sample in $(cat $OUTPUT/list.txt); do
             A=${sample}.clean_1.fastq.gz
@@ -475,10 +532,10 @@ if [ "$VARCALL" -ne "0" ]; then
             echo -e "$Blue""Processing sample: $sample""$Off"
             bwa mem -Y -M -R "@RG\tID:${sample}\tSM:${sample}" -t $CPUS "$REF" "$OUTPUT"/trimmed_reads/"$A" "$OUTPUT"/trimmed_reads/"$B" |
                 samclip --max 10 --ref "$IND" | # filter out soft and hard clipped alignments from sam file
-                samtools sort -n -l 0 -T "$temp"/"${sample}" --threads 8 -m 1000M |
+                samtools sort -n -l 0 -T "$tmp"/"${sample}" --threads 8 -m 1000M |
                 samtools fixmate -m - - |
-                samtools sort -l 0 -T "$temp"/"${sample}" --threads 8 -m 1000M |
-                samtools markdup -T "$temp"/"${sample}" -r -s - - >"$OUTPUT"/variant_calling/"${sample}".mrkdup.bam
+                samtools sort -l 0 -T "$tmp"/"${sample}" --threads 8 -m 1000M |
+                samtools markdup -T "$tmp"/"${sample}" -r -s - - >"$OUTPUT"/variant_calling/"${sample}".mrkdup.bam
             samtools index "$OUTPUT"/variant_calling/"${sample}".mrkdup.bam | tee -a "$OUTPUT"/rMAP.log
         done | tee -a "$OUTPUT"/rMAP.log
         end=$SECONDS
@@ -487,8 +544,6 @@ if [ "$VARCALL" -ne "0" ]; then
         ############----------------- Individual sample variant calling ---------------############
         start=$SECONDS
         echo -e "$Blue""\nrMAP is will now perform Variant Calling ...""$Off"
-        TEMP="$OUTPUT/references"
-        REF="$TEMP/*.fa"
         mkdir -p "$OUTPUT"/variant_calling/snps
         for sample in $(cat $OUTPUT/list.txt); do
             x=${sample}.mrkdup.bam
@@ -505,8 +560,6 @@ if [ "$VARCALL" -ne "0" ]; then
         echo -e "$Blue""\nrMAP is will create for you a combined VCF file with all sample-IDs ...""$Off"
         start=$SECONDS
         x=""
-        TEMP="$OUTPUT/references"
-        REF="$TEMP/*.fa"
 
         for sample in $(cat $OUTPUT/list.txt); do
             x="$x$OUTPUT/variant_calling/${sample}.mrkdup.bam "
@@ -525,7 +578,6 @@ if [ "$VARCALL" -ne "0" ]; then
         chmod 777 "$CONDA_PREFIX"/share/snpeff-5.0-1/snpEff.jar
         chmod 777 "$CONDA_PREFIX"/share/snpeff-5.0-1/*
         SNPEFF="$CONDA_PREFIX/share/snpeff-5.0-1"
-        TEMP="$OUTPUT/references"
         for sample in $(cat $OUTPUT/list.txt); do
             mkdir -p "$OUTPUT"/variant_calling/snps/"${sample}"/references/{genomes,ref}
             x=${sample}.filt.vcf
@@ -567,7 +619,6 @@ if [ "$VARCALL" -ne "0" ]; then
         chmod 777 "$CONDA_PREFIX"/share/snpeff-5.0-1/snpEff.jar
         chmod 777 "$CONDA_PREFIX"/share/snpeff-5.0-1/*
         SNPEFF="$CONDA_PREFIX/share/snpeff-5.0-1"
-        TEMP="$OUTPUT/references"
         y="$(cat "$TEMP"/temp1.txt)"
         mkdir -p "$OUTPUT"/variant_calling/snps/combined-snps/references/{genomes,ref}
         cp -f "$OUTPUT"/variant_calling/combined.filt.vcf "$OUTPUT"/variant_calling/snps/combined-snps/references/
@@ -601,23 +652,33 @@ if [ "$VARCALL" -ne "0" ]; then
         echo "Your Run Took Approximately: $((end - start)) seconds."
         echo -e "$Green""VCF Annotation Successfuly Completed in: $((end - start)) seconds.""$Off"
 
-    elif [[ $REFERENCE =~ \.fasta$ ]]; then
+    elif [[ $REFERENCE_FILE =~ \.fasta$ ]]; then
         echo "$Red"".fasta found !!! no annotation""$Off" | tee -a "$OUTPUT"/rMAP.log
-        echo "$TEMP/$REFERENCE" | awk -F"." '{print $1}' | cut -d/ -f3 >"$TEMP"/temp.txt
-        x="$(cat "$TEMP"/temp.txt)"
-        mv "$TEMP"/"$REFERENCE" "$TEMP"/"$x".fa
-        bwa index "$TEMP"/*.fa
-        samtools faidx "$TEMP"/*.fa
+        
+        # Extract basename without extension
+        x="${REFERENCE_FILE%.fasta}"
+        echo "$x" > "$TEMP"/temp.txt
+        
+        # Rename to .fa extension
+        mv "$TEMP"/"$REFERENCE_FILE" "$TEMP"/"$x".fa
+        
+        bwa index "$TEMP"/"$x".fa
+        samtools faidx "$TEMP"/"$x".fa
+        
+        # Update REF and IND to point to the actual files
+        REF="$TEMP/$x.fa"
+        IND="$TEMP/$x.fa.fai"
+        
         for sample in $(cat $OUTPUT/list.txt); do
             A=${sample}.clean_1.fastq.gz
             B=${sample}.clean_2.fastq.gz
             echo -e "$Blue""Processing sample: ""$sample""$Off"
             bwa mem -Y -M -R "@RG\tID:${sample}\tSM:${sample}" -t $CPUS "$REF" "$OUTPUT"/trimmed_reads/"$A" "$OUTPUT"/trimmed_reads/"$B" |
-                samclip --max 10 --ref $IND | # filter out soft and hard clipped alignments from sam file
-                samtools sort -n -l 0 -T "$temp"/"${sample}" --threads 8 -m 1000M |
+                samclip --max 10 --ref "$IND" | # filter out soft and hard clipped alignments from sam file
+                samtools sort -n -l 0 -T "$tmp"/"${sample}" --threads 8 -m 1000M |
                 samtools fixmate -m - - |
-                samtools sort -l 0 -T "$temp"/"${sample}" --threads 8 -m 1000M |
-                samtools markdup -T "$temp"/"${sample}" -r -s - - >"$OUTPUT"/variant_calling/"${sample}".mrkdup.bam
+                samtools sort -l 0 -T "$tmp"/"${sample}" --threads 8 -m 1000M |
+                samtools markdup -T "$tmp"/"${sample}" -r -s - - >"$OUTPUT"/variant_calling/"${sample}".mrkdup.bam
             samtools index "$OUTPUT"/variant_calling/"${sample}".mrkdup.bam
         done | tee -a "$OUTPUT"/rMAP.log
         end=$SECONDS
@@ -626,8 +687,6 @@ if [ "$VARCALL" -ne "0" ]; then
         ##################### Variant calling #####################################
         ###########----------------- Individual sample sample variant calling ---------------###########
         start=$SECONDS
-        TEMP="$OUTPUT/references"
-        REF="$TEMP/*.fa"
         mkdir -p "$OUTPUT"/variant_calling/snps
         for sample in $(cat $OUTPUT/list.txt); do
             x=${sample}.mrkdup.bam
@@ -643,9 +702,7 @@ if [ "$VARCALL" -ne "0" ]; then
         ###########--------------- Multiple sample/all-sample-single-file variant calling -------------------##########
         start=$SECONDS
         x=""
-        TEMP="$OUTPUT/references"
-        REF="$TEMP/*.fa"
-        for sample in $(cat $HOME/$OUTPUT/list.txt); do
+        for sample in $(cat $OUTPUT/list.txt); do
             x="$x$OUTPUT/variant_calling/${sample}.mrkdup.bam "
 
             echo -e "$Blue""Processing sample: $sample""$Off"
@@ -655,9 +712,19 @@ if [ "$VARCALL" -ne "0" ]; then
         done | tee -a "$OUTPUT"/rMAP.log
         bcftools view --include 'FMT/GT="1/1" && QUAL>=100 && FMT/DP>=10 && (FMT/AO)/(FMT/DP)>=0' "$OUTPUT"/variant_calling/combined.raw.vcf | vt normalize -r "$REF" - | bcftools annotate --remove '^INFO/TYPE,^INFO/DP,^INFO/RO,^INFO/AO,^INFO/AB,^FORMAT/GT,^FORMAT/DP,^FORMAT/RO,^FORMAT/AO,^FORMAT/QR,^FORMAT/QA,^FORMAT/GL' >"$OUTPUT"/variant_calling/combined.filt.vcf
     else
+        # Assume .fa file
         echo ".fa found !!! no annotation"
-        bwa index "$TEMP"/*.fa
-        samtools faidx "$TEMP"/*.fa
+        
+        # Extract basename without extension
+        x="${REFERENCE_FILE%.fa}"
+        
+        bwa index "$TEMP"/"$REFERENCE_FILE"
+        samtools faidx "$TEMP"/"$REFERENCE_FILE"
+        
+        # Update REF and IND to point to the actual files
+        REF="$TEMP/$REFERENCE_FILE"
+        IND="$TEMP/$REFERENCE_FILE.fai"
+        
         for sample in $(cat $OUTPUT/list.txt); do
             A=${sample}.clean_1.fastq.gz
             B=${sample}.clean_2.fastq.gz
@@ -665,10 +732,10 @@ if [ "$VARCALL" -ne "0" ]; then
 
             bwa mem -Y -M -R "@RG\tID:${sample}\tSM:${sample}" -t $CPUS "$REF" "$OUTPUT"/trimmed_reads/"$A" "$OUTPUT"/trimmed_reads/"$B" |
                 samclip --max 10 --ref "$IND" | # filter out soft and hard clipped alignments from sam file
-                samtools sort -n -l 0 -T "$temp"/"${sample}" --threads 8 -m 1000M |
+                samtools sort -n -l 0 -T "$tmp"/"${sample}" --threads 8 -m 1000M |
                 samtools fixmate -m - - |
-                samtools sort -l 0 -T "$temp"/"${sample}" --threads 8 -m 1000M |
-                samtools markdup -T "$temp"/"${sample}" -r -s - - >"$OUTPUT"/variant_calling/"${sample}".mrkdup.bam
+                samtools sort -l 0 -T "$tmp"/"${sample}" --threads 8 -m 1000M |
+                samtools markdup -T "$tmp"/"${sample}" -r -s - - >"$OUTPUT"/variant_calling/"${sample}".mrkdup.bam
             samtools index "$OUTPUT"/variant_calling/"${sample}".mrkdup.bam
         done | tee -a "$OUTPUT"/rMAP.log
         end=$SECONDS
@@ -676,8 +743,6 @@ if [ "$VARCALL" -ne "0" ]; then
         ##################### Variant calling #####################################
         #######----------------- Individual sample sample variant calling ---------------############
         start=$SECONDS
-        TEMP="$OUTPUT/references"
-        REF="$TEMP/*.fa"
         mkdir -p "$OUTPUT"/variant_calling/snps
         for sample in $(cat $OUTPUT/list.txt); do
             x=${sample}.mrkdup.bam
@@ -693,9 +758,7 @@ if [ "$VARCALL" -ne "0" ]; then
         ################--------------- Multiple sample/all-sample-single-file variant calling -------------------#
         start=$SECONDS
         x=""
-        TEMP="$OUTPUT/references"
-        REF="$TEMP/*.fa"
-        for sample in $(cat $HOME/$OUTPUT/list.txt); do
+        for sample in $(cat $OUTPUT/list.txt); do
             x="$x$OUTPUT/variant_calling/${sample}.mrkdup.bam "
 
             echo -e "$Blue""Processing sample: ""$sample""$Off"
@@ -727,7 +790,7 @@ if [ "$PHY" -ne "0" ]; then
     ######--------- MULTIPLE SEQUENCE ALIGNMENT USING MAFFT-------------------------
 
     ######------------Alignment at adjusted gap-score 2.0
-    mafft --retree 1 --thread 8 "$OUTPUT"/phylogeny/combined.filt.fasta" >$OUTP"UT/phylogeny/combined.filt-algn.fasta
+    mafft --retree 1 --thread 8 "$OUTPUT"/phylogeny/combined.filt.fasta >"$OUTPUT"/phylogeny/combined.filt-algn.fasta
     ######------------Applying BMGE[Block Mapping and Gathering with Entropy] to remove poorlyly aligned regions
     bmge -i "$OUTPUT"/phylogeny/combined.filt-algn.fasta -t DNA -o "$OUTPUT"/phylogeny/combined.filt-algn.phy -on "$OUTPUT"/phylogeny/combined.filt-algn.nex
     #####------------------ Applying inference in 1000 Bootraps #################
@@ -1036,7 +1099,7 @@ date: "$DATE"
 output: html_document
 ---
 \`\`\`{r, echo=FALSE, message=FALSE, warning=FALSE}
-setwd("/$HOME/$OUTPUT/reports")
+setwd("$OUTPUT/reports")
 library(ggplot2)
 library(ggtree)
 library(knitr)
@@ -1542,7 +1605,7 @@ plot_ly(x=x, y=y, z=MEGARESdata, type = "heatmap", colors=colorRamp(c("gainsboro
 
 EOF
 
-if [ -d /$HOME/$OUTPUT/reports ]; then
+if [ -d $OUTPUT/reports ]; then
     cat <<EOF >>$OUTPUT/reports/rMAP_report.Rmd
 ## Plasmid Profiling {#plasmids}
 
@@ -1669,7 +1732,7 @@ cat <<EOF >>$OUTPUT/reports/rMAP_report.Rmd
 
 EOF
 
-if [ -s /$HOME/$OUTPUT/reports/mlst.tab ]; then
+if [ -s $OUTPUT/reports/mlst.tab ]; then
     cat <<EOF >>$OUTPUT/reports/rMAP_report.Rmd
 
 ## Multi-Locus Sequence Typing (MLST) {#mlst}
