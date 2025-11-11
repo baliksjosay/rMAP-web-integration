@@ -417,8 +417,7 @@ if [ -e "$ADAPTERS" ]; then
         end=$SECONDS
         echo -e "$Green""\nYour Trimming Run Took Approximately: $((end - start)) seconds.""$Off"
     else
-        echo -e "$Red""'-q/--trim' option disabled: rMAP cannot skip trimming process... This is required for downstream analysis!! Please select '-q' or '--trim'...rMAP will now exit...""$Off"
-        exit 1
+           exit 1
     fi
 fi
 
