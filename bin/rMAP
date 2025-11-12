@@ -390,35 +390,66 @@ else
 
 fi
 cd
+
 ################################ QUALITY TRIMMING ####################################
 # Use all available CPUs for maximum performance
 CPUS=$(nproc)
 echo -e "$Blue""Using all $CPUS CPU threads""$Off"
 
-if [ -e "$ADAPTERS" ]; then
-    if [ "$TRIM" -ne "0" ]; then
-        TRIM=1
-        start=$SECONDS
-        echo -e "$Blue""$ADAPTERS present\n""$Off"
-        echo -e "$Blue""\nrMAP is now Trimming the reads for quality:$QUALITY, minimum length:$MINLEN\n""$Off"
-        mkdir -p "$OUTPUT"/trimmed_reads
-        for sample in $(cat $OUTPUT/list.txt); do
-            A=${sample}_1.fastq.gz
-            B=${sample}_2.fastq.gz
-            echo -e "$Red""\nProcessing sample: ""$sample""$Off"
-            
-            trimmomatic PE -threads $CPUS -phred33 \
-                "$INPUT"/"$A" "$INPUT"/"$B" \
-                "$OUTPUT"/trimmed_reads/"$sample".clean_1.fastq.gz /dev/null \
-                "$OUTPUT"/trimmed_reads/"$sample".clean_2.fastq.gz /dev/null \
-                ILLUMINACLIP:"$ADAPTERS":1:30:11 \
-                LEADING:${QUALITY} TRAILING:${QUALITY} MINLEN:${MINLEN}
-        done
-        end=$SECONDS
-        echo -e "$Green""\nYour Trimming Run Took Approximately: $((end - start)) seconds.""$Off"
-    else
-           exit 1
-    fi
+# Ensure adapter file exists
+if [ ! -f "$ADAPTERS" ]; then
+    echo -e "$Yellow""Warning: Adapter file not found at $ADAPTERS. fastp will auto-detect adapters.""$Off"
+fi
+
+if [ "$TRIM" -ne "0" ]; then
+    TRIM=1
+    start=$SECONDS
+    echo -e "$Blue""Adapters: ${ADAPTERS:-auto-detect}\n""$Off"
+    echo -e "$Blue""\nrMAP is now Trimming reads for quality=$QUALITY, min length=$MINLEN\n""$Off"
+    mkdir -p "$OUTPUT/trimmed_reads"
+
+    while read -r sample; do
+        A=${sample}_1.fastq.gz
+        B=${sample}_2.fastq.gz
+        echo -e "$Red""\nProcessing sample: $sample""$Off"
+
+        OUT1="$OUTPUT/trimmed_reads/${sample}.clean_1.fastq.gz"
+        OUT2="$OUTPUT/trimmed_reads/${sample}.clean_2.fastq.gz"
+        LOG="$OUTPUT/trimmed_reads/${sample}_trim.log"
+
+        # ---------- Try Trimmomatic ----------
+        if trimmomatic PE -threads $CPUS -phred33 \
+            "$INPUT/$A" "$INPUT/$B" \
+            "$OUT1" /dev/null "$OUT2" /dev/null \
+            ILLUMINACLIP:"$ADAPTERS":1:30:11 \
+            LEADING:${QUALITY} TRAILING:${QUALITY} MINLEN:${MINLEN} \
+            &> "$LOG"; then
+            echo -e "$Green""Trimmomatic succeeded for $sample""$Off"
+
+        # ---------- Fallback to fastp ----------
+        else
+            echo -e "$Yellow""Trimmomatic failed for $sample — switching to fastp""$Off"
+            fastp -i "$INPUT/$A" -I "$INPUT/$B" \
+                  -o "$OUT1" -O "$OUT2" \
+                  -w $CPUS -l $MINLEN -q $QUALITY \
+                  --detect_adapter_for_pe \
+                  --html "$OUTPUT/trimmed_reads/${sample}_fastp.html" \
+                  --json "$OUTPUT/trimmed_reads/${sample}_fastp.json" \
+                  &>> "$LOG" || echo -e "$Red""fastp also failed for $sample""$Off"
+        fi
+
+        # Verify outputs
+        if [ -s "$OUT1" ] && [ -s "$OUT2" ]; then
+            echo -e "$Green""Trimmed outputs ready for $sample""$Off"
+        else
+            echo -e "$Red""No valid trimmed files for $sample — skipping downstream steps.""$Off"
+        fi
+    done < "$OUTPUT/list.txt"
+
+    end=$SECONDS
+    echo -e "$Green""\nYour Trimming Run Took Approximately: $((end - start)) seconds.""$Off"
+else
+    echo -e "$Yellow""Skipping trimming stage (TRIM=0)""$Off"
 fi
 
 ################-------------Quality filtering stats---------------------###############
