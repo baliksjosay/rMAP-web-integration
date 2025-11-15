@@ -401,6 +401,11 @@ if [ ! -f "$ADAPTERS" ]; then
     echo -e "$Yellow""Warning: Adapter file not found at $ADAPTERS. fastp will auto-detect adapters.""$Off"
 fi
 
+# =============================================================================
+# Trimming Script - Optimized for Assembly Method
+# Uses fastp for Shovill, Trimmomatic for others
+# =============================================================================
+
 if [ "$TRIM" -ne "0" ]; then
     TRIM=1
     start=$SECONDS
@@ -417,37 +422,47 @@ if [ "$TRIM" -ne "0" ]; then
         OUT2="$OUTPUT/trimmed_reads/${sample}.clean_2.fastq.gz"
         LOG="$OUTPUT/trimmed_reads/${sample}_trim.log"
 
-        # ---------- Try Trimmomatic ----------
-        if trimmomatic PE -threads $CPUS -phred33 \
-            "$INPUT/$A" "$INPUT/$B" \
-            "$OUT1" /dev/null "$OUT2" /dev/null \
-            ILLUMINACLIP:"$ADAPTERS":1:30:11 \
-            LEADING:${QUALITY} TRAILING:${QUALITY} MINLEN:${MINLEN} \
-            &> "$LOG"; then
-            echo -e "$Green""Trimmomatic succeeded for $sample""$Off"
-
-        # ---------- Fallback to fastp ----------
-        else
-            echo -e "$Yellow""Trimmomatic failed for $sample — switching to fastp""$Off"
+        # ---------- Choose trimmer based on assembly method ----------
+        if [ "$ASSEMBLY" == "shovill" ]; then
+            # Use fastp for Shovill (optimized for SPAdes-based assembly)
+            echo -e "$Blue""Using fastp (optimized for Shovill)""$Off"
             fastp -i "$INPUT/$A" -I "$INPUT/$B" \
                   -o "$OUT1" -O "$OUT2" \
                   -w $CPUS -l $MINLEN -q $QUALITY \
                   --detect_adapter_for_pe \
                   --html "$OUTPUT/trimmed_reads/${sample}_fastp.html" \
                   --json "$OUTPUT/trimmed_reads/${sample}_fastp.json" \
-                  &>> "$LOG" || echo -e "$Red""fastp also failed for $sample""$Off"
+                  &> "$LOG" || echo -e "$Red""fastp failed for $sample""$Off"
+        else
+            # Use Trimmomatic with fastp fallback for other assemblers
+            echo -e "$Blue""Using Trimmomatic (with fastp fallback)""$Off"
+            if ! trimmomatic PE -threads $CPUS -phred33 \
+                "$INPUT/$A" "$INPUT/$B" \
+                "$OUT1" /dev/null "$OUT2" /dev/null \
+                ILLUMINACLIP:"$ADAPTERS":1:30:11 \
+                LEADING:${QUALITY} TRAILING:${QUALITY} MINLEN:${MINLEN} \
+                &> "$LOG"; then
+                echo -e "$Yellow""Trimmomatic failed — switching to fastp""$Off"
+                fastp -i "$INPUT/$A" -I "$INPUT/$B" \
+                      -o "$OUT1" -O "$OUT2" \
+                      -w $CPUS -l $MINLEN -q $QUALITY \
+                      --detect_adapter_for_pe \
+                      --html "$OUTPUT/trimmed_reads/${sample}_fastp.html" \
+                      --json "$OUTPUT/trimmed_reads/${sample}_fastp.json" \
+                      &>> "$LOG" || echo -e "$Red""Both trimmers failed for $sample""$Off"
+            fi
         fi
 
         # Verify outputs
         if [ -s "$OUT1" ] && [ -s "$OUT2" ]; then
-            echo -e "$Green""Trimmed outputs ready for $sample""$Off"
+            echo -e "$Green""✓ Trimmed outputs ready for $sample""$Off"
         else
-            echo -e "$Red""No valid trimmed files for $sample — skipping downstream steps.""$Off"
+            echo -e "$Red""✗ No valid trimmed files for $sample""$Off"
         fi
     done < "$OUTPUT/list.txt"
 
     end=$SECONDS
-    echo -e "$Green""\nYour Trimming Run Took Approximately: $((end - start)) seconds.""$Off"
+    echo -e "$Green""\nTrimming completed in $((end - start)) seconds""$Off"
 else
     echo -e "$Yellow""Skipping trimming stage (TRIM=0)""$Off"
 fi
